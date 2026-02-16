@@ -71,7 +71,7 @@ def load_vehicules_specs():
     """Charger les caractéristiques des véhicules depuis le fichier Excel"""
     try:
         # Tenter de charger depuis le fichier uploadé par l'utilisateur
-        df = pd.read_excel('30veli_caracteristiques_vehicules_v3.xlsx', sheet_name='Caractéristiques Véhicules')
+        df = pd.read_excel('30veli_caracteristiques_vehicules.xlsx', sheet_name='Caractéristiques Véhicules')
         return df
     except:
         # Si le fichier n'existe pas encore, retourner None
