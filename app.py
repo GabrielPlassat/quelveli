@@ -7,7 +7,7 @@ import numpy as np
 
 # Configuration de la page
 st.set_page_config(
-    page_title="30VELI - Conseiller Véhicules",
+    page_title="30VELI - Conseiller Véhicules v2",
     page_icon="🚗",
     layout="wide"
 )
@@ -39,423 +39,436 @@ st.markdown("""
     .positive {color: #28a745; font-weight: bold;}
     .negative {color: #dc3545; font-weight: bold;}
     .neutral {color: #ffc107; font-weight: bold;}
+    .criteria-match {
+        background-color: #d4edda;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.2rem 0;
+    }
+    .criteria-nomatch {
+        background-color: #f8d7da;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.2rem 0;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 @st.cache_data
 def load_data():
-    """Charger les données depuis l'URL"""
+    """Charger les données d'expérience depuis l'URL"""
     try:
         df = pd.read_csv('https://30veli.fabmob.io/cache/30veli_export_experiences.csv')
-        
-        # Nettoyage des données
         df['Model'] = df['Model'].fillna(df['vehicule'])
         df = df[df['Model'].notna()]
-        
         return df
     except Exception as e:
-        st.error(f"Erreur lors du chargement des données : {e}")
+        st.error(f"Erreur lors du chargement des données d'expérience : {e}")
         return None
 
-def analyze_vehicle_data(df, vehicule, territoire=None, cas_usage=None):
-    """Analyser les données pour un véhicule donné"""
-    # Filtrer par véhicule
-    df_vehicle = df[df['Model'] == vehicule].copy()
+@st.cache_data
+def load_vehicules_specs():
+    """Charger les caractéristiques des véhicules depuis le fichier Excel"""
+    try:
+        # Tenter de charger depuis le fichier uploadé par l'utilisateur
+        df = pd.read_excel('30veli_caracteristiques_vehicules.xlsx', sheet_name='Caractéristiques Véhicules')
+        return df
+    except:
+        # Si le fichier n'existe pas encore, retourner None
+        return None
+
+def check_vehicle_match(vehicle_row, criteria):
+    """Vérifier si un véhicule correspond aux critères"""
+    score = 100
+    matches = []
+    mismatches = []
     
-    # Filtrer par territoire si spécifié
-    if territoire and territoire != "Tous":
-        if territoire == "Plutôt plat":
-            df_vehicle = df_vehicle[df_vehicle['territoire'].str.contains('Commune|CC', na=False)]
-        elif territoire == "Vallonné":
-            df_vehicle = df_vehicle[df_vehicle['territoire'].str.contains('CC', na=False)]
-        elif territoire == "Montagneux":
-            df_vehicle = df_vehicle[df_vehicle['territoire'].str.contains('PNR|Montagne', na=False)]
+    # Critère : Pédaler
+    if 'pedaler' in criteria and criteria['pedaler'] is not None:
+        vehicle_pedaler = str(vehicle_row.get('Nécessite de pédaler (OUI/NON)', '')).upper()
+        if criteria['pedaler'] == 'OUI' and vehicle_pedaler == 'OUI':
+            matches.append("✅ Nécessite de pédaler")
+        elif criteria['pedaler'] == 'NON' and vehicle_pedaler == 'NON':
+            matches.append("✅ Pas besoin de pédaler")
+        elif vehicle_pedaler in ['OUI', 'NON']:
+            mismatches.append(f"❌ Pédaler : {'requis' if vehicle_pedaler == 'OUI' else 'non requis'}")
+            score -= 20
     
-    # Filtrer par cas d'usage si spécifié
-    if cas_usage:
-        motif_keywords = {
-            "Domicile-Travail": ["Travail", "Domicile / travail", "travail"],
-            "Courses": ["Courses", "courses"],
-            "Loisirs": ["Loisirs", "loisirs"],
-            "Médical": ["Médical", "médical", "kiné", "rdv"],
-            "École": ["école", "École", "enfant"],
+    # Critère : Passagers enfants
+    if 'nb_enfants' in criteria and criteria['nb_enfants'] is not None:
+        col_name = f"Passagers enfants - {criteria['nb_enfants']}"
+        if col_name in vehicle_row.index:
+            if str(vehicle_row[col_name]).upper() == 'OUI':
+                matches.append(f"✅ Peut transporter {criteria['nb_enfants']} enfant(s)")
+            else:
+                mismatches.append(f"❌ Ne peut pas transporter {criteria['nb_enfants']} enfant(s)")
+                score -= 25
+    
+    # Critère : Passagers adultes
+    if 'nb_adultes' in criteria and criteria['nb_adultes'] is not None:
+        col_name = f"Passagers adultes - {criteria['nb_adultes']}"
+        if col_name in vehicle_row.index:
+            if str(vehicle_row[col_name]).upper() == 'OUI':
+                matches.append(f"✅ Peut transporter {criteria['nb_adultes']} adulte(s)")
+            else:
+                mismatches.append(f"❌ Ne peut pas transporter {criteria['nb_adultes']} adulte(s)")
+                score -= 25
+    
+    # Critère : Chargement
+    if 'chargement' in criteria and criteria['chargement']:
+        chargement_map = {
+            "Petit sac (< 5kg)": "Chargement - Petit sac (< 5kg)",
+            "Sacs courses semaine (10-30kg)": "Chargement - Sacs courses semaine (10-30kg)",
+            "Charges lourdes (> 100kg)": "Chargement - Charges lourdes (> 100kg)"
         }
-        
-        if cas_usage in motif_keywords:
-            keywords = motif_keywords[cas_usage]
-            df_vehicle = df_vehicle[df_vehicle['motif'].str.contains('|'.join(keywords), case=False, na=False)]
+        col_name = chargement_map.get(criteria['chargement'])
+        if col_name and col_name in vehicle_row.index:
+            if str(vehicle_row[col_name]).upper() == 'OUI':
+                matches.append(f"✅ Capacité de chargement : {criteria['chargement']}")
+            else:
+                mismatches.append(f"❌ Capacité de chargement insuffisante")
+                score -= 20
     
-    if len(df_vehicle) == 0:
-        return None
+    # Critère : Couverture
+    if 'couverture' in criteria and criteria['couverture']:
+        if criteria['couverture'] == "Totalement couvert":
+            if str(vehicle_row.get('Totalement couvert (OUI/NON)', '')).upper() == 'OUI':
+                matches.append("✅ Totalement couvert")
+            else:
+                mismatches.append("❌ Pas totalement couvert")
+                score -= 15
+        elif criteria['couverture'] == "Partiellement couvert":
+            if str(vehicle_row.get('Partiellement couvert (OUI/NON)', '')).upper() == 'OUI':
+                matches.append("✅ Partiellement couvert")
+            else:
+                mismatches.append("⚠️ Couverture différente")
+                score -= 10
     
-    # Calcul des scores
-    total_trips = len(df_vehicle)
+    # Critère : Territoire
+    if 'territoire' in criteria and criteria['territoire']:
+        terrain_map = {
+            "Plutôt plat": "Adapté terrain plat (OUI/NON)",
+            "Vallonné": "Adapté terrain vallonné (OUI/NON)",
+            "Montagneux": "Adapté terrain montagneux (OUI/NON)"
+        }
+        col_name = terrain_map.get(criteria['territoire'])
+        if col_name and col_name in vehicle_row.index:
+            if str(vehicle_row[col_name]).upper() == 'OUI':
+                matches.append(f"✅ Adapté terrain {criteria['territoire'].lower()}")
+            else:
+                mismatches.append(f"❌ Pas adapté terrain {criteria['territoire'].lower()}")
+                score -= 20
     
-    # Score de satisfaction (basé sur les bilans)
-    bilan_counts = df_vehicle['bilan'].value_counts()
-    satisfaction_score = (
-        bilan_counts.get('Très positif', 0) * 1.0 +
-        bilan_counts.get('Positif', 0) * 0.7 +
-        bilan_counts.get('Négatif', 0) * 0.0
-    ) / total_trips if total_trips > 0 else 0
-    
-    # Avantages
-    avantage_cols = [col for col in df_vehicle.columns if col.startswith('avantage_') and col != 'avantage_aucun' and col != 'avantage_autre']
-    avantages = {}
-    for col in avantage_cols:
-        count = df_vehicle[col].sum()
-        if count > 0:
-            avantages[col.replace('avantage_', '').capitalize()] = int(count)
-    
-    # Difficultés
-    difficulte_cols = [col for col in df_vehicle.columns if col.startswith('difficulte_') and col != 'difficulte_aucune' and col != 'difficulte_autre']
-    difficultes = {}
-    for col in difficulte_cols:
-        count = df_vehicle[col].sum()
-        if count > 0:
-            difficultes[col.replace('difficulte_', '').capitalize()] = int(count)
-    
-    # Distance moyenne
-    distances = df_vehicle['totalDistanceKm'].dropna()
-    avg_distance = distances.mean() if len(distances) > 0 else 0
-    
-    # Commentaires récents
-    commentaires = df_vehicle[df_vehicle['commentaires'].notna()]['commentaires'].head(5).tolist()
-    
-    return {
-        'vehicule': vehicule,
-        'total_trips': total_trips,
-        'satisfaction_score': satisfaction_score,
-        'avantages': avantages,
-        'difficultes': difficultes,
-        'avg_distance': avg_distance,
-        'bilan_counts': bilan_counts.to_dict(),
-        'commentaires': commentaires
-    }
+    return max(0, score), matches, mismatches
 
-def display_vehicle_card(analysis):
-    """Afficher une carte de véhicule avec ses statistiques"""
-    if not analysis:
-        return
+def display_vehicle_recommendation(vehicle_name, vehicle_specs, experience_data, score, matches, mismatches):
+    """Afficher une recommandation de véhicule avec toutes les infos"""
     
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown(f"### {vehicle_name}")
+    
+    # Barre de score
+    if score >= 80:
+        color = "green"
+        label = "Excellent choix"
+    elif score >= 60:
+        color = "orange"
+        label = "Bon choix"
+    else:
+        color = "red"
+        label = "Peu adapté"
+    
+    st.progress(score / 100)
+    st.markdown(f"**Score : {score}/100** - <span style='color:{color}'>{label}</span>", unsafe_allow_html=True)
+    
+    # Colonnes pour les caractéristiques
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Trajets", analysis['total_trips'])
+        st.markdown("**📋 Caractéristiques**")
+        vitesse = vehicle_specs.get('Vitesse max (km/h)', 'N/A')
+        autonomie = vehicle_specs.get('Autonomie (km)', 'N/A')
+        st.write(f"🏎️ Vitesse max : {vitesse} km/h")
+        st.write(f"🔋 Autonomie : {autonomie} km")
     
     with col2:
-        score = analysis['satisfaction_score'] * 100
-        st.metric("Satisfaction", f"{score:.0f}%")
+        st.markdown("**✅ Critères respectés**")
+        if matches:
+            for match in matches[:5]:
+                st.markdown(f'<div class="criteria-match">{match}</div>', unsafe_allow_html=True)
+        else:
+            st.write("_Aucun critère spécifique_")
     
     with col3:
-        st.metric("Distance moy.", f"{analysis['avg_distance']:.1f} km")
-    
-    with col4:
-        # Bilan général
-        max_bilan = max(analysis['bilan_counts'].items(), key=lambda x: x[1], default=('Positif', 0))
-        st.metric("Bilan général", max_bilan[0])
-    
-    # Avantages et difficultés
-    col_a, col_b = st.columns(2)
-    
-    with col_a:
-        st.markdown("**🎯 Avantages principaux**")
-        if analysis['avantages']:
-            sorted_avantages = sorted(analysis['avantages'].items(), key=lambda x: x[1], reverse=True)[:5]
-            for avantage, count in sorted_avantages:
-                st.write(f"- {avantage} ({count})")
+        st.markdown("**⚠️ Points d'attention**")
+        if mismatches:
+            for mismatch in mismatches[:5]:
+                st.markdown(f'<div class="criteria-nomatch">{mismatch}</div>', unsafe_allow_html=True)
         else:
-            st.write("_Aucun avantage spécifique mentionné_")
+            st.write("_Tous les critères respectés_")
     
-    with col_b:
-        st.markdown("**⚠️ Difficultés rencontrées**")
-        if analysis['difficultes']:
-            sorted_difficultes = sorted(analysis['difficultes'].items(), key=lambda x: x[1], reverse=True)[:5]
-            for difficulte, count in sorted_difficultes:
-                st.write(f"- {difficulte} ({count})")
-        else:
-            st.write("_Aucune difficulté majeure_")
+    # Retours d'expérience
+    if experience_data is not None and len(experience_data) > 0:
+        df_vehicle = experience_data[experience_data['Model'] == vehicle_name]
+        if len(df_vehicle) > 0:
+            with st.expander(f"📊 Retours d'expérience ({len(df_vehicle)} trajets)"):
+                # Satisfaction
+                bilan_counts = df_vehicle['bilan'].value_counts()
+                satisfaction = (
+                    bilan_counts.get('Très positif', 0) * 1.0 +
+                    bilan_counts.get('Positif', 0) * 0.7
+                ) / len(df_vehicle) * 100 if len(df_vehicle) > 0 else 0
+                
+                st.metric("Taux de satisfaction", f"{satisfaction:.0f}%")
+                
+                # Commentaires
+                commentaires = df_vehicle[df_vehicle['commentaires'].notna()]['commentaires'].head(3).tolist()
+                if commentaires:
+                    st.markdown("**Derniers retours :**")
+                    for i, comment in enumerate(commentaires, 1):
+                        st.write(f"{i}. _{comment[:150]}{'...' if len(comment) > 150 else ''}_")
     
-    # Commentaires
-    if analysis['commentaires']:
-        with st.expander("📝 Voir les retours d'expérience"):
-            for i, comment in enumerate(analysis['commentaires'], 1):
-                st.markdown(f"**Retour {i}:** {comment[:200]}{'...' if len(comment) > 200 else ''}")
-
-def calculate_recommendation_score(analysis, territoire, cas_usage_list, couverture):
-    """Calculer un score de recommandation basé sur les critères"""
-    if not analysis:
-        return 0
+    # Remarques du fabricant
+    remarques = vehicle_specs.get('Remarques', '')
+    if remarques and str(remarques) != 'nan':
+        st.info(f"💡 **Remarque :** {remarques}")
     
-    score = analysis['satisfaction_score'] * 50  # Max 50 points pour la satisfaction
-    
-    # Bonus pour nombre de trajets (indicateur de fiabilité)
-    score += min(analysis['total_trips'] / 10, 20)  # Max 20 points
-    
-    # Pénalités pour difficultés
-    if analysis['difficultes']:
-        nb_difficultes = sum(analysis['difficultes'].values())
-        score -= min(nb_difficultes * 2, 20)  # Max -20 points
-    
-    # Bonus pour avantages
-    if analysis['avantages']:
-        nb_avantages = sum(analysis['avantages'].values())
-        score += min(nb_avantages, 20)  # Max +20 points
-    
-    # Ajustement pour couverture (si le véhicule est partiellement couvert)
-    # On regarde si le véhicule a des avantages "confort" ou "bien_etre"
-    if couverture == "Partiellement couvert":
-        if 'Confort' in analysis['avantages'] or 'Bien_etre' in analysis['avantages']:
-            score += 5
-    
-    return max(0, min(score, 100))  # Score entre 0 et 100
+    st.markdown("---")
 
 # Interface principale
 def main():
-    st.markdown('<p class="main-header">🚗 30VELI - Conseiller Véhicules</p>', unsafe_allow_html=True)
-    st.markdown("### Trouvez le véhicule le plus adapté à vos besoins")
+    st.markdown('<p class="main-header">🚗 30VELI - Conseiller Véhicules v2</p>', unsafe_allow_html=True)
+    st.markdown("### Trouvez le véhicule parfait selon vos besoins précis")
     
     # Charger les données
-    df = load_data()
+    experience_data = load_data()
+    vehicules_specs = load_vehicules_specs()
     
-    if df is None:
-        st.error("Impossible de charger les données. Veuillez vérifier votre connexion.")
+    # Vérifier si le fichier de specs existe
+    if vehicules_specs is None:
+        st.warning("⚠️ **Fichier de caractéristiques manquant**")
+        st.info("""
+        Pour utiliser cette version améliorée du dashboard, vous devez :
+        
+        1. Télécharger le fichier Excel `30veli_caracteristiques_vehicules.xlsx`
+        2. Le remplir avec les caractéristiques de chaque véhicule
+        3. L'uploader dans votre repository GitHub à côté de `app.py`
+        
+        En attendant, vous pouvez utiliser la version basique du dashboard.
+        """)
+        
+        # Proposer le téléchargement du template
+        if st.button("📥 Comment obtenir le fichier Excel ?"):
+            st.markdown("""
+            Le fichier Excel vous a été fourni avec l'application. Il s'appelle :
+            **30veli_caracteristiques_vehicules.xlsx**
+            
+            Ce fichier contient :
+            - Une feuille "Caractéristiques Véhicules" à remplir
+            - Une feuille "Instructions" avec le guide de remplissage
+            - Une feuille "Exemple" pour vous aider
+            """)
+        
         return
     
-    # Sidebar avec filtres
-    st.sidebar.header("🎯 Vos critères")
+    # Sidebar avec les nouveaux critères
+    st.sidebar.header("🎯 Vos critères détaillés")
     
-    # Récupérer les véhicules disponibles
-    vehicules_disponibles = sorted(df['Model'].unique())
+    # 1. Effort physique
+    st.sidebar.markdown("### 💪 Effort physique")
+    pedaler = st.sidebar.radio(
+        "Souhaitez-vous pédaler ?",
+        ["Indifférent", "Oui, je veux pédaler", "Non, sans effort"],
+        index=0
+    )
     
-    # Filtres
+    # 2. Transport de passagers
+    st.sidebar.markdown("### 👥 Transport de passagers")
+    
+    nb_enfants = st.sidebar.selectbox(
+        "Nombre d'enfants à transporter",
+        [0, 1, 2, 3],
+        index=0
+    )
+    
+    nb_adultes = st.sidebar.selectbox(
+        "Nombre d'adultes à transporter (en plus du conducteur)",
+        [0, 1, 2, 3],
+        index=0
+    )
+    
+    # 3. Capacité de chargement
+    st.sidebar.markdown("### 📦 Capacité de chargement")
+    chargement = st.sidebar.selectbox(
+        "Type de chargement",
+        [
+            "Aucun besoin spécifique",
+            "Petit sac (< 5kg)",
+            "Sacs courses semaine (10-30kg)",
+            "Charges lourdes (> 100kg)"
+        ],
+        index=0
+    )
+    
+    # 4. Couverture
+    st.sidebar.markdown("### ☔ Protection météo")
+    couverture = st.sidebar.selectbox(
+        "Couverture souhaitée",
+        ["Indifférent", "Totalement couvert", "Partiellement couvert", "Non couvert"],
+        index=0
+    )
+    
+    # 5. Territoire
+    st.sidebar.markdown("### 🗺️ Type de terrain")
     territoire = st.sidebar.selectbox(
-        "Type de territoire",
-        ["Tous", "Plutôt plat", "Vallonné", "Montagneux"]
+        "Relief habituel",
+        ["Indifférent", "Plutôt plat", "Vallonné", "Montagneux"],
+        index=0
     )
     
-    # Cas d'usage multiples
-    cas_usage_options = [
-        "Domicile-Travail",
-        "Courses",
-        "Loisirs",
-        "Médical",
-        "École",
-    ]
-    
+    # 6. Cas d'usage (de l'ancienne version)
+    st.sidebar.markdown("### 🎯 Cas d'usage")
     cas_usage = st.sidebar.multiselect(
-        "Cas d'usage (plusieurs choix possibles)",
-        cas_usage_options
-    )
-    
-    couverture = st.sidebar.radio(
-        "Couverture du véhicule",
-        ["Totalement couvert", "Partiellement couvert", "Non couvert"]
-    )
-    
-    meteo = st.sidebar.multiselect(
-        "Conditions météo habituelles",
-        ["Ensoleillé", "Nuageux", "Pluvieux", "Venteux"]
+        "Type d'utilisation (optionnel)",
+        ["Domicile-Travail", "Courses", "Loisirs", "Médical", "École"]
     )
     
     # Bouton de recherche
     rechercher = st.sidebar.button("🔍 Trouver les véhicules adaptés", type="primary")
     
+    # Construire le dictionnaire de critères
+    criteria = {
+        'pedaler': 'OUI' if 'Oui' in pedaler else ('NON' if 'Non' in pedaler else None),
+        'nb_enfants': nb_enfants,
+        'nb_adultes': nb_adultes,
+        'chargement': chargement if chargement != "Aucun besoin spécifique" else None,
+        'couverture': couverture if couverture != "Indifférent" else None,
+        'territoire': territoire if territoire != "Indifférent" else None,
+        'cas_usage': cas_usage
+    }
+    
     # Tabs
-    tab1, tab2, tab3 = st.tabs(["🏆 Recommandations", "📊 Comparaison", "📈 Statistiques"])
+    tab1, tab2, tab3 = st.tabs(["🏆 Recommandations", "📊 Tous les véhicules", "📈 Statistiques"])
     
     with tab1:
         st.markdown("## Véhicules recommandés pour vous")
         
-        if rechercher or not cas_usage:
-            # Analyser tous les véhicules
+        # Afficher les critères sélectionnés
+        criteres_actifs = []
+        if criteria['pedaler']:
+            criteres_actifs.append(f"💪 {'Avec' if criteria['pedaler']=='OUI' else 'Sans'} pédalage")
+        if criteria['nb_enfants'] > 0:
+            criteres_actifs.append(f"👶 {criteria['nb_enfants']} enfant(s)")
+        if criteria['nb_adultes'] > 0:
+            criteres_actifs.append(f"👥 {criteria['nb_adultes']} adulte(s)")
+        if criteria['chargement']:
+            criteres_actifs.append(f"📦 {criteria['chargement']}")
+        if criteria['couverture']:
+            criteres_actifs.append(f"☔ {criteria['couverture']}")
+        if criteria['territoire']:
+            criteres_actifs.append(f"🗺️ Terrain {criteria['territoire'].lower()}")
+        
+        if criteres_actifs:
+            st.info("**Critères sélectionnés :** " + " • ".join(criteres_actifs))
+        
+        if rechercher or len(criteres_actifs) > 0:
+            # Analyser chaque véhicule
             recommendations = []
             
-            for vehicule in vehicules_disponibles:
-                # Si plusieurs cas d'usage, on analyse chacun
-                if cas_usage:
-                    analyses = []
-                    for cu in cas_usage:
-                        analysis = analyze_vehicle_data(df, vehicule, territoire, cu)
-                        if analysis:
-                            analyses.append(analysis)
-                    
-                    # Moyenne des analyses
-                    if analyses:
-                        combined_analysis = {
-                            'vehicule': vehicule,
-                            'total_trips': sum(a['total_trips'] for a in analyses),
-                            'satisfaction_score': np.mean([a['satisfaction_score'] for a in analyses]),
-                            'avantages': {},
-                            'difficultes': {},
-                            'avg_distance': np.mean([a['avg_distance'] for a in analyses]),
-                            'bilan_counts': {},
-                            'commentaires': []
-                        }
-                        
-                        # Combiner avantages
-                        for a in analyses:
-                            for k, v in a['avantages'].items():
-                                combined_analysis['avantages'][k] = combined_analysis['avantages'].get(k, 0) + v
-                            for k, v in a['difficultes'].items():
-                                combined_analysis['difficultes'][k] = combined_analysis['difficultes'].get(k, 0) + v
-                            combined_analysis['commentaires'].extend(a['commentaires'])
-                        
-                        score = calculate_recommendation_score(combined_analysis, territoire, cas_usage, couverture)
-                        recommendations.append((vehicule, score, combined_analysis))
-                else:
-                    # Pas de filtre sur cas d'usage
-                    analysis = analyze_vehicle_data(df, vehicule, territoire, None)
-                    if analysis:
-                        score = calculate_recommendation_score(analysis, territoire, cas_usage, couverture)
-                        recommendations.append((vehicule, score, analysis))
+            for idx, vehicle_row in vehicules_specs.iterrows():
+                vehicle_name = vehicle_row['Véhicule']
+                score, matches, mismatches = check_vehicle_match(vehicle_row, criteria)
+                recommendations.append((vehicle_name, score, matches, mismatches, vehicle_row))
             
             # Trier par score
             recommendations.sort(key=lambda x: x[1], reverse=True)
             
             if recommendations:
-                # Afficher le top 3
-                st.markdown("### 🥇 Top 3 des véhicules recommandés")
+                # Top 3
+                st.markdown("### 🥇 Top 3 des véhicules les plus adaptés")
                 
-                for i, (vehicule, score, analysis) in enumerate(recommendations[:3], 1):
+                for i, (vehicle_name, score, matches, mismatches, vehicle_specs) in enumerate(recommendations[:3], 1):
                     medal = ["🥇", "🥈", "🥉"][i-1]
                     with st.container():
-                        st.markdown(f"### {medal} {vehicule}")
-                        st.progress(score / 100)
-                        st.markdown(f"**Score de recommandation : {score:.0f}/100**")
-                        
-                        display_vehicle_card(analysis)
-                        
-                        st.markdown("---")
+                        st.markdown(f"## {medal} {vehicle_name}")
+                        display_vehicle_recommendation(
+                            vehicle_name, vehicle_specs, experience_data, 
+                            score, matches, mismatches
+                        )
                 
-                # Afficher les autres
+                # Autres véhicules
                 if len(recommendations) > 3:
-                    with st.expander("Voir les autres véhicules"):
-                        for vehicule, score, analysis in recommendations[3:]:
-                            st.markdown(f"### {vehicule}")
-                            st.progress(score / 100)
-                            st.markdown(f"**Score : {score:.0f}/100**")
-                            display_vehicle_card(analysis)
-                            st.markdown("---")
+                    with st.expander(f"📋 Voir les autres véhicules ({len(recommendations)-3})"):
+                        for vehicle_name, score, matches, mismatches, vehicle_specs in recommendations[3:]:
+                            display_vehicle_recommendation(
+                                vehicle_name, vehicle_specs, experience_data,
+                                score, matches, mismatches
+                            )
             else:
-                st.info("Aucun véhicule ne correspond à vos critères. Essayez d'élargir votre recherche.")
+                st.warning("Aucun véhicule trouvé. Vérifiez le fichier de caractéristiques.")
+        else:
+            st.info("👈 Sélectionnez vos critères dans le menu de gauche et cliquez sur 'Trouver les véhicules adaptés'")
     
     with tab2:
-        st.markdown("## Comparaison de véhicules")
+        st.markdown("## Catalogue complet des véhicules")
         
-        # Sélection de véhicules à comparer
-        vehicules_compare = st.multiselect(
-            "Sélectionnez 2 à 4 véhicules à comparer",
-            vehicules_disponibles,
-            max_selections=4
-        )
-        
-        if len(vehicules_compare) >= 2:
-            # Créer un tableau comparatif
-            comparison_data = []
+        if vehicules_specs is not None:
+            # Afficher le tableau
+            st.dataframe(vehicules_specs, use_container_width=True, height=400)
             
-            for vehicule in vehicules_compare:
-                analysis = analyze_vehicle_data(df, vehicule, territoire, cas_usage[0] if cas_usage else None)
-                if analysis:
-                    comparison_data.append({
-                        'Véhicule': vehicule,
-                        'Trajets': analysis['total_trips'],
-                        'Satisfaction': f"{analysis['satisfaction_score']*100:.0f}%",
-                        'Distance moy.': f"{analysis['avg_distance']:.1f} km",
-                        'Avantages': len(analysis['avantages']),
-                        'Difficultés': len(analysis['difficultes'])
-                    })
-            
-            if comparison_data:
-                df_compare = pd.DataFrame(comparison_data)
-                st.dataframe(df_compare, use_container_width=True)
-                
-                # Graphiques comparatifs
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Graphique de satisfaction
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        x=[d['Véhicule'] for d in comparison_data],
-                        y=[float(d['Satisfaction'].rstrip('%')) for d in comparison_data],
-                        marker_color='lightblue'
-                    ))
-                    fig.update_layout(
-                        title="Taux de satisfaction",
-                        yaxis_title="%",
-                        height=400
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with col2:
-                    # Graphique avantages vs difficultés
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        name='Avantages',
-                        x=[d['Véhicule'] for d in comparison_data],
-                        y=[d['Avantages'] for d in comparison_data],
-                        marker_color='green'
-                    ))
-                    fig.add_trace(go.Bar(
-                        name='Difficultés',
-                        x=[d['Véhicule'] for d in comparison_data],
-                        y=[d['Difficultés'] for d in comparison_data],
-                        marker_color='red'
-                    ))
-                    fig.update_layout(
-                        title="Avantages vs Difficultés",
-                        barmode='group',
-                        height=400
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Sélectionnez au moins 2 véhicules pour les comparer.")
+            # Permettre le téléchargement
+            st.download_button(
+                label="📥 Télécharger le tableau complet (CSV)",
+                data=vehicules_specs.to_csv(index=False).encode('utf-8'),
+                file_name='30veli_vehicules.csv',
+                mime='text/csv',
+            )
     
     with tab3:
-        st.markdown("## Statistiques générales")
+        st.markdown("## Statistiques d'utilisation")
         
-        # Vue d'ensemble
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Véhicules testés", len(vehicules_disponibles))
-        
-        with col2:
-            st.metric("Trajets recensés", len(df))
-        
-        with col3:
-            avg_satisfaction = df['bilan'].value_counts(normalize=True).get('Très positif', 0) + df['bilan'].value_counts(normalize=True).get('Positif', 0) * 0.7
-            st.metric("Satisfaction moyenne", f"{avg_satisfaction*100:.0f}%")
-        
-        with col4:
-            total_distance = df['totalDistanceKm'].sum()
-            st.metric("Distance totale", f"{total_distance:.0f} km")
-        
-        # Graphiques
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Distribution des véhicules
-            vehicle_counts = df['Model'].value_counts()
-            fig = px.bar(
-                x=vehicle_counts.index,
-                y=vehicle_counts.values,
-                labels={'x': 'Véhicule', 'y': 'Nombre de trajets'},
-                title="Répartition des trajets par véhicule"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Distribution des bilans
-            bilan_counts = df['bilan'].value_counts()
-            fig = px.pie(
-                values=bilan_counts.values,
-                names=bilan_counts.index,
-                title="Répartition des bilans",
-                color_discrete_sequence=['green', 'lightgreen', 'orange', 'red']
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        if experience_data is not None:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Véhicules testés", len(vehicules_specs))
+            
+            with col2:
+                st.metric("Trajets recensés", len(experience_data))
+            
+            with col3:
+                avg_satisfaction = (
+                    experience_data['bilan'].value_counts(normalize=True).get('Très positif', 0) +
+                    experience_data['bilan'].value_counts(normalize=True).get('Positif', 0) * 0.7
+                )
+                st.metric("Satisfaction moyenne", f"{avg_satisfaction*100:.0f}%")
+            
+            with col4:
+                total_distance = experience_data['totalDistanceKm'].sum()
+                st.metric("Distance totale", f"{total_distance:.0f} km")
+            
+            # Graphiques
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                vehicle_counts = experience_data['Model'].value_counts()
+                fig = px.bar(
+                    x=vehicle_counts.index,
+                    y=vehicle_counts.values,
+                    labels={'x': 'Véhicule', 'y': 'Nombre de trajets'},
+                    title="Répartition des trajets par véhicule"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                bilan_counts = experience_data['bilan'].value_counts()
+                fig = px.pie(
+                    values=bilan_counts.values,
+                    names=bilan_counts.index,
+                    title="Répartition des bilans",
+                    color_discrete_sequence=['green', 'lightgreen', 'orange', 'red']
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
+
